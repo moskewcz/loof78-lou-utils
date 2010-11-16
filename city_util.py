@@ -317,14 +317,15 @@ class CityLayout( object ):
                         yield i,j,row[i]
     
     def calc_res( self ):
-        print "--- res totals ---"
+        ret = ""
+        ret += "--- res totals ---\n"
         all_tot = 0
         for res in all_res:
             res_tot = 0 if res.name != "wood" else 300 # hack for TH town_hall wood prod
             for i,j,cobj in self.iter_mat():
                 res_tot += self.calc_res_at( res, i, j )
             all_tot += res_tot
-            print res.name, res_tot
+            ret += "%s %s\n" % (res.name, res_tot )
 
         tot_buildings = 0
         for i,j,cobj in self.template.iter_mat():
@@ -335,8 +336,9 @@ class CityLayout( object ):
         prod_per_b = "nan"
         if tot_buildings:
             prod_per_b = float(all_tot)/tot_buildings
-        print ( "--- end res --- total buildings %s all_tot %s prod/building %s ---" %
+        ret += ( "--- end res --- total buildings %s all_tot %s prod/building %s ---" %
                 (tot_buildings, all_tot, prod_per_b ) )
+        return ret
 
     def calc_res_at( self, res, i, j ):
         if self.mat[j][i] == res.pb_name:
@@ -551,12 +553,12 @@ class TestCityLayout(unittest.TestCase):
     def test_calc_res(self):
         for s,readable in [(fcp_res_ex,False)]:#self.all_strs:
             cl = CityLayout().parse_str( s )
-            cl.calc_res()
+            print cl.calc_res()
             cl.remove_non_nr()
-            cl.calc_res()
+            print cl.calc_res()
             print cl.get_fcp_str()
             cl.greedy_place_prod_all_res()
-            cl.calc_res()
+            print cl.calc_res()
             print cl.get_str()
             
     def test_bad_parse(self):
