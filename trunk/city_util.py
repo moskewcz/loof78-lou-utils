@@ -328,16 +328,20 @@ class CityLayout( object ):
             ret += "%s %s\n" % (res.name, res_tot )
 
         tot_buildings = 0
+        tot_cottages = 0
         for i,j,cobj in self.template.iter_mat():
             if ( (cobj == "building_place_on_ground") and
                  (self.mat[j][i] != cobj) and
                  (not self.mat[j][i] in nr_names) ):
                 tot_buildings += 1
+                if self.mat[j][i] == "cottage":
+                    tot_cottages += 1
         prod_per_b = "nan"
         if tot_buildings:
             prod_per_b = float(all_tot)/tot_buildings
-        ret += ( "--- end res --- total buildings %s all_tot %s prod/building %s ---" %
-                (tot_buildings, all_tot, prod_per_b ) )
+        ret += ( "--- end res --- cottages %s other_buildings %s total_buildings %s"
+                 " all_tot %s prod/building %s ---" %
+                (tot_cottages,tot_buildings-tot_cottages,tot_buildings, all_tot, prod_per_b ) )
         return ret
 
     def calc_res_at( self, res, i, j ):
@@ -354,10 +358,18 @@ class CityLayout( object ):
             return 0
 
     def can_build_land( self, i, j, locked ):
-        return( (self.template.mat[j][i] == "building_place_on_ground") and
-                not ( (i,j) in locked ) )
+        if self.build_only_on_open:
+            return( (self.mat[j][i] == "building_place_on_ground") and
+                    not ( (i,j) in locked ) )
+        else:
+            return( (self.template.mat[j][i] == "building_place_on_ground") and
+                    not ( (i,j) in locked ) )
 
-    def greedy_place_prod_all_res( self, use_slots = 72, num_cottages = 15 ):
+    def greedy_place_prod_all_res( self, use_slots = 72, num_cottages = 15, 
+                                   keep_extra_res_nodes = 0, build_only_on_open = 0 ):
+        # sigh, i'm too lazy to pass this down:
+        self.build_only_on_open = build_only_on_open
+
         # hacky optimization: if there are < 3 nat res (originally) in
         # range of a potential booster spot, don't bother. we don't
         # update the cands as res are destroyed.
@@ -387,10 +399,11 @@ class CityLayout( object ):
         slots_left = self.greedy_place_cottages( locked, 3, slots_left )
         slots_left = self.greedy_place_cottages( locked, 2, slots_left )
 
-        self.remove_unlocked_nrs( locked )
-        for res in all_res:
-            if 0 and res.nr_name == "building_place_on_ground":
-                self.greedy_place_prod_res( res, locked )
+        if not keep_extra_res_nodes:
+            self.remove_unlocked_nrs( locked )
+        #for res in all_res:
+        #    if 0 and res.nr_name == "building_place_on_ground":
+        #        self.greedy_place_prod_res( res, locked )
 
     def greedy_place_cottages( self, locked, score_thresh, slots_left ):
         for i,j,cobj in self.iter_mat():
