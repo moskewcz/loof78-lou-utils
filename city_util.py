@@ -158,8 +158,9 @@ import re, unittest
 
 
 class ResInfo( object ):
-    def __init__( self, name, pb_name, base_prod, nr_name, bb_name, lake_name ):
+    def __init__( self, name, rix, pb_name, base_prod, nr_name, bb_name, lake_name ):
         self.name = name
+        self.rix = rix
         self.pb_name = pb_name # prod building name 
         self.base_prod = base_prod
         self.nr_name = nr_name # natural res node name
@@ -167,10 +168,10 @@ class ResInfo( object ):
         self.lake_name = lake_name # 'lake' type booster res name (if applicable)
 
         
-all_res = [ ResInfo( "wood", "woodcutter", 250, "wood", "sawmill", None ),
-            ResInfo( "stone", "quarry", 250, "stone", "stonemason", None ),
-            ResInfo( "iron", "iron_mine", 250, "iron", "foundry", None ),
-            ResInfo( "food", "farm", 300, "building_place_on_ground", "mill", "lake" ),
+all_res = [ ResInfo( "wood",  0, "woodcutter", 250, "wood", "sawmill", None ),
+            ResInfo( "stone", 1, "quarry", 250, "stone", "stonemason", None ),
+            ResInfo( "iron",  2, "iron_mine", 250, "iron", "foundry", None ),
+            ResInfo( "food",  3, "farm", 300, "building_place_on_ground", "mill", "lake" ),
             ]
 
 nr_names = set( [res.nr_name for res in all_res] 
@@ -184,6 +185,7 @@ class ParseError( ValueError ):
 class CityLayout( object ):
     city_rows = 21
     city_cols = 21
+    city_elems = city_rows*city_cols
     # set the templates to None for bootstrapping parse_ncp_str()
     land_template = None
     water_template = None
@@ -192,7 +194,40 @@ class CityLayout( object ):
         self.kind = None
         self.template = None
         self.output_str_func = self.get_fcp_str
-        self.mat = [ [None]*self.city_cols for i in range(0,self.city_rows) ]
+        self._mat = [None]*self.city_elems
+        self._res_mat = [None]*self.city_elems*len(all_res) # for res placment scores
+    def res_mat_get( self, i, j, rix ):
+        return self._res_mat[ i + j*self.city_cols + rix*self.city_elems ]
+    def res_mat_set( self, i, j, rix, v ):
+        self._res_mat[ i + j*self.city_cols + rix*self.city_elems ] = v
+    def res_mat_invalidate( self, s_i, s_j ):
+        dist = 2
+        for j in xrange(s_j-dist,s_j+dist+1):
+            if j>0 and j<self.city_rows:
+                for i in xrange(s_i-dist,s_i+dist+1):
+                    if i>0 and i<self.city_cols:
+                        for rix in xrange(len(all_res)):
+                            self.res_mat_set(i,j,rix,None)
+        
+    def mat_get( self, i, j ):
+        return self._mat[ i + j*self.city_cols ]
+    def mat_set( self, i, j, v ):
+        self._mat[ i + j*self.city_cols ] = v
+    def iter_mat( self ):
+        ix = 0
+        for j in xrange( self.city_rows ):
+            for i in xrange( self.city_cols ):
+                yield i,j,self._mat[ix]
+                ix += 1
+
+
+    # note: the results includes s_i,s_j itself
+    def iter_adj( self, s_i, s_j, dist = 1 ):
+        for j in xrange(s_j-dist,s_j+dist+1):
+            if j>0 and j<self.city_rows:
+                for i in xrange(s_i-dist,s_i+dist+1):
+                    if i>0 and i<self.city_cols:
+                        yield i,j,self._mat[ i + j*self.city_cols ]#mat_get(i,j)
 
     def check_len_and_parse_kind( self, err_str, s, expected_len, char_kind_map ):
         if len(s) != expected_len:
@@ -209,21 +244,24 @@ class CityLayout( object ):
         ncp_str = re.sub(r'\s', '', ncp_str)
         ss_strip_res = re.search( r'\[ShareString.*?\]([^[]*)(?:\[/ShareString.*\])?', ncp_str )
         if ss_strip_res: ncp_str = ss_strip_res.group(1)
-        expected_len = 1 + sum( len(row) for row in self.mat )
+        expected_len = 1 + self.city_elems
         self.check_len_and_parse_kind( "ncp", ncp_str, expected_len, ncp_char_kind_map )
         pos = 1
-        for j,row in enumerate(self.mat):
-            for i in xrange(0,len(row)):
-                if ex:
-                    # note: ex=1 is only called internally, so no nice user error check here.
-                    row[i] = ncp_ex_char_cobj_map[ ncp_str[i+pos] ]
-                else:
-                    row[i] = ncp_char_cobj_map.get( ncp_str[i+pos], None )
-                    if row[i] == False: row[i] = self.template.mat[j][i]
-                if row[i] is None:
-                    raise ParseError( "bad ncp city object char %s, expected something in %s"
-                                        % (ncp_str[i+pos],ncp_char_cobj_map.keys()) )
-            pos += len(row)
+        for i,j,cur_cobj in self.iter_mat():
+            read_cobj = None
+            if ex:
+                # note: ex=1 is only called internally, so no nice user error check here.
+                read_cobj = ncp_ex_char_cobj_map[ ncp_str[pos] ]
+            else:
+                try:
+                    read_cobj = ncp_char_cobj_map[ ncp_str[pos] ]
+                except KeyError, e:
+                    raise ParseError( "bad ncp city object char %s, expected something in %s" % 
+                                      (ncp_str[pos],ncp_char_cobj_map.keys() ) )
+                if read_cobj == False: read_cobj = self.template.mat_get(i,j)
+            assert not read_cobj is None
+            self.mat_set(i,j,read_cobj)
+            pos += 1
         self.output_str_func = self.get_ncp_str
         return self # syntax sugar
 
@@ -246,25 +284,24 @@ class CityLayout( object ):
     # in the same places, so we arbitrarily use the land template for
     # the wall checks.
     def parse_fcp_str( self, fcp_str ):
-        lt_mat = CityLayout.land_template.mat # used for wall checks
+        lt = CityLayout.land_template # used for wall checks
         fcp_str = re.sub(r'\s|\.', '', fcp_str)
         url_strip_res = re.search( r'map=(.*)', fcp_str )
         if url_strip_res: fcp_str = url_strip_res.group(1)
-        expected_len = 1 + sum( sum( cobj != "wall" for cobj in row ) for row in lt_mat )
+        expected_len = 1 + sum( cobj != "wall" for i,j,cobj in lt.iter_mat() )
         self.check_len_and_parse_kind( "fcp", fcp_str, expected_len, fcp_char_kind_map )
         pos = 1
-        for j,row in enumerate(lt_mat):
-            for i in xrange(0,len(row)):
-                if row[i] != "wall":
-                    cobj = fcp_char_cobj_map.get( fcp_str[pos], None )
-                    if cobj == False: cobj = self.template.mat[j][i]
-                    if cobj is None:
-                        raise ParseError( "bad fcp city object char %s, expected something in %s"
-                                            % (fcp_str[pos],fcp_char_cobj_map.keys()) )
-                    self.mat[j][i] = cobj
-                    pos += 1
-                else:
-                    self.mat[j][i] = row[i]
+        for i,j,lt_cobj in lt.iter_mat():
+            if lt_cobj != "wall":
+                read_cobj = fcp_char_cobj_map.get( fcp_str[pos], None )
+                if read_cobj == False: read_cobj = self.template.mat_get(i,j)
+                if read_cobj is None:
+                    raise ParseError( "bad fcp city object char %s, expected something in %s"
+                                        % (fcp_str[pos],fcp_char_cobj_map.keys()) )
+                self.mat_set(i,j,read_cobj)
+                pos += 1
+            else:
+                self.mat_set(i,j,lt_cobj)
         self.output_str_func = self.get_fcp_str
         return self # syntax sugar
 
@@ -272,8 +309,8 @@ class CityLayout( object ):
         ret = "" if readable else "[ShareString.1.3]"
         nl = "\n" if readable else ""
         ret += ncp_kind_char_map[self.kind] + nl
-        for row in self.mat:
-            ret += "".join( ncp_cobj_char_map[cobj] for cobj in row ) + nl
+        for j in xrange(self.city_rows):
+            ret += "".join( ncp_cobj_char_map[self.mat_get(i,j)] for i in xrange(self.city_cols) ) + nl
         ret += "" if readable else "[/ShareString]"
         return ret
 
@@ -281,9 +318,9 @@ class CityLayout( object ):
         ret = "" if readable else fcp_url_prefix
         nl = "\n" if readable else ""
         ret += fcp_kind_char_map[self.kind] + nl
-        for j,row in enumerate(self.mat):
-            for i in xrange(0,len(row)):
-                c = fcp_cobj_char_map[row[i]]
+        for j in xrange(self.city_rows):
+            for i in xrange(self.city_cols):
+                c = fcp_cobj_char_map[self.mat_get(i,j)]
                 if not c and readable: c = '.'
                 ret += c
             ret += nl
@@ -292,30 +329,16 @@ class CityLayout( object ):
     def get_str( self, readable = False ):
         return self.output_str_func( readable )
 
-    def iter_mat( self ):
-        for j,row in enumerate(self.mat):
-            for i in xrange(0,len(row)):
-                yield i,j,row[i]
-
     def remove_non_nr( self ):
         for i,j,cobj in self.iter_mat():
             if not cobj in nr_names:
-                self.mat[j][i] = self.template.mat[j][i]
+                self.mat_set(i,j,self.template.mat_get(i,j))
 
     def remove_unlocked_nrs( self, locked ):
         for i,j,cobj in self.iter_mat():
             if (not (i,j) in locked) and (cobj in nr_names) and (cobj != "lake"):
-                self.mat[j][i] = self.template.mat[j][i]
-            
-    # note: the results includes s_i,s_j itself
-    def iter_adj( self, s_i, s_j, dist = 1 ):
-        for j in xrange(s_j-dist,s_j+dist+1):
-            if j>0 and j<len(self.mat):
-                row = self.mat[j]
-                for i in xrange(s_i-dist,s_i+dist+1):
-                    if i>0 and i<len(row):
-                        yield i,j,row[i]
-    
+                self.mat_set(i,j,self.template.mat_get(i,j))
+                
     def calc_res( self ):
         ret = ""
         ret += "--- res totals ---\n"
@@ -331,10 +354,10 @@ class CityLayout( object ):
         tot_cottages = 0
         for i,j,cobj in self.template.iter_mat():
             if ( (cobj == "building_place_on_ground") and
-                 (self.mat[j][i] != cobj) and
-                 (not self.mat[j][i] in nr_names) ):
+                 (self.mat_get(i,j) != cobj) and
+                 (not self.mat_get(i,j) in nr_names) ):
                 tot_buildings += 1
-                if self.mat[j][i] == "cottage":
+                if self.mat_get(i,j) == "cottage":
                     tot_cottages += 1
         prod_per_b = "nan"
         if tot_buildings:
@@ -345,7 +368,7 @@ class CityLayout( object ):
         return ret
 
     def calc_res_at( self, res, i, j ):
-        if self.mat[j][i] == res.pb_name:
+        if self.mat_get(i,j) == res.pb_name:
             adj = [ cobj for i,j,cobj in self.iter_adj(i,j) ]
             prod = res.base_prod
             num_nr = adj.count( res.nr_name )
@@ -359,14 +382,15 @@ class CityLayout( object ):
 
     def can_build_land( self, i, j, locked ):
         if self.build_only_on_open:
-            return( (self.mat[j][i] == "building_place_on_ground") and
+            return( (self.mat_get(i,j) == "building_place_on_ground") and
                     not ( (i,j) in locked ) )
         else:
-            return( (self.template.mat[j][i] == "building_place_on_ground") and
+            return( (self.template.mat_get(i,j) == "building_place_on_ground") and
                     not ( (i,j) in locked ) )
 
     def greedy_place_prod_all_res( self, use_slots = 72, num_cottages = 15, 
-                                   keep_extra_res_nodes = 0, build_only_on_open = 0 ):
+                                   keep_extra_res_nodes = 0, build_only_on_open = 0,
+                                   placement_schedule = [ "WSI" ] ):
         # sigh, i'm too lazy to pass this down:
         self.build_only_on_open = build_only_on_open
 
@@ -383,21 +407,19 @@ class CityLayout( object ):
 
         assert use_slots > num_cottages
         slots_left = use_slots - num_cottages
-        score_thresh = 700
         locked = set()
+        place_wave = 0
         while slots_left > 0:
-            #print "-- wave, score_thresh ", score_thresh
+            wave_res_set = placement_schedule[ place_wave % len(placement_schedule) ]
             orig_slots_left = slots_left
-            for res in all_res:
-                if res.nr_name != "building_place_on_ground":
-                    slots_left = self.greedy_place_prod_res( res, score_thresh, locked, slots_left )
-            if orig_slots_left == slots_left and score_thresh < 500:
+            slots_left = self.greedy_place_prod_res( locked, slots_left, wave_res_set )
+            if orig_slots_left == slots_left:
                 break # no progress exit
-            score_thresh -= 50
+            place_wave += 1
 
         slots_left += num_cottages
-        slots_left = self.greedy_place_cottages( locked, 3, slots_left )
-        slots_left = self.greedy_place_cottages( locked, 2, slots_left )
+        for min_cot_adj in xrange(3,-1,-1):
+            slots_left = self.greedy_place_cottages( locked, min_cot_adj, slots_left )
 
         if not keep_extra_res_nodes:
             self.remove_unlocked_nrs( locked )
@@ -411,56 +433,70 @@ class CityLayout( object ):
                 score = sum( int(cobj in pb_names) for ii,jj,cobj in self.iter_adj(i,j) )
                 if score >= score_thresh and slots_left:
                     locked.add( (i,j) )
-                    self.mat[j][i] = "cottage"
+                    self.mat_set(i,j,"cottage")
                     slots_left -= 1
         return slots_left
                     
-    def greedy_place_prod_res( self, res, score_thresh, locked, slots_left ):
-        for i,j,cobj in self.res_bb_cands[res.name]:
-            if self.can_build_land(i,j,locked) or self.mat[j][i] == res.bb_name:
-                already_placed = not self.can_build_land(i,j,locked)
-                placed = []
-                if not already_placed:
-                    locked.add( (i,j) )
-                    orig_cobj = self.mat[j][i]
-                    self.mat[j][i] = res.bb_name
-                    placed = [(i,j,res.bb_name)]
-                adj = [ (ii,jj) for ii,jj,cobj in self.iter_adj( i, j ) 
-                        if self.can_build_land(ii,jj,locked) ]
-                best = [0,None]
-                self.try_prod( res, i, j, adj, locked, placed, best )
-                if not already_placed:
-                    self.mat[j][i] = orig_cobj
-                    locked.remove( (i,j) )
-
-                # if the best is good enough, place it, and lock used NRs
-                if best[0] >= score_thresh and len(best[1]) <= slots_left:
-                    slots_left -= len(best[1])
-                    #print "slots_left", slots_left, "placed", best
-                    for i,j,cobj in best[1]:
-                        assert self.can_build_land( i, j, locked )
-                        locked.add( (i,j) )
-                        self.mat[j][i] = cobj
-                    for i,j,cobj in best[1]:
-                        if cobj == res.pb_name:
-                            for ii,jj,cobj in self.iter_adj(i,j):
-                                if cobj == res.nr_name:
-                                    locked.add( (ii,jj) )
+    def greedy_place_prod_res( self, locked, slots_left, res_set ):
+        all_best = [0,[],None]
+        wave_res = [ res for res in all_res if res.name[0].upper() in res_set ]
+        for res in wave_res:
+            for i,j,cobj in self.res_bb_cands[res.name]:
+                if self.can_build_land(i,j,locked) or self.mat_get(i,j) == res.bb_name:
+                    best = self.res_mat_get( i, j, res.rix )
+                    if (best is None) or (len(best[1]) > slots_left):
+                        best = [0,None]
+                        already_placed = not self.can_build_land(i,j,locked)
+                        placed = []
+                        if not already_placed:
+                            locked.add( (i,j) )
+                            orig_cobj = self.mat_get(i,j)
+                            self.mat_set(i,j,res.bb_name)
+                            placed = [(i,j,res.bb_name)]
+                        adj = [ (ii,jj) for ii,jj,cobj in self.iter_adj( i, j ) 
+                                if self.can_build_land(ii,jj,locked) ]
+                        self.try_prod( res, i, j, adj, locked, placed, best, slots_left )
+                        if best[1] is None: best = None # couldn't place anything
+                        self.res_mat_set( i, j, res.rix, best )
+                        if not already_placed:
+                            self.mat_set(i,j,orig_cobj)
+                            locked.remove( (i,j) )
+                    if (best is not None) and best[0] > all_best[0]:
+                        all_best[0:2] = best
+                        all_best[2] = res
+        #print "slots_left", slots_left, all_best[0:2]
+        
+        assert len(all_best[1]) <= slots_left
+        slots_left -= len(all_best[1])
+        #print "slots_left", slots_left, "placed", best
+        for i,j,cobj in all_best[1]:
+            assert self.can_build_land( i, j, locked )
+            locked.add( (i,j) )
+            self.mat_set(i,j,cobj)
+            self.res_mat_invalidate(i,j)
+        res = all_best[2]
+        for i,j,cobj in all_best[1]:
+            if cobj == res.pb_name:
+                for ii,jj,cobj in self.iter_adj(i,j):
+                    if cobj == res.nr_name:
+                        locked.add( (ii,jj) )
         return slots_left
-    def try_prod( self, res, s_i, s_j, adj, locked, placed, best ):
+
+    def try_prod( self, res, s_i, s_j, adj, locked, placed, best, slots_left ):
         if len(adj): # recursive case
             i,j = adj[0]
             assert self.can_build_land(i,j,locked) 
             locked.add( (i,j) )
-            self.try_prod( res, s_i, s_j, adj[1:], locked, placed, best ) # 'don't place' case
-            orig_cobj = self.mat[j][i]
+            self.try_prod( res, s_i, s_j, adj[1:], locked, placed, best, slots_left ) # 'don't place' case
+            orig_cobj = self.mat_get(i,j)
 
-            self.mat[j][i] = res.pb_name
-            placed.append( (i,j,res.pb_name) )
-            self.try_prod( res, s_i, s_j, adj[1:], locked, placed, best ) # 'place' case
-            placed.pop()
+            if len(placed) < slots_left:
+                self.mat_set(i,j,res.pb_name)
+                placed.append( (i,j,res.pb_name) )
+                self.try_prod( res, s_i, s_j, adj[1:], locked, placed, best, slots_left ) # 'place' case
+                placed.pop()
 
-            self.mat[j][i] = orig_cobj
+            self.mat_set(i,j,orig_cobj)
             locked.remove( (i,j) )
         elif placed: # leaf case
             tot_res = 0
@@ -570,7 +606,7 @@ class TestCityLayout(unittest.TestCase):
             cl.remove_non_nr()
             print cl.calc_res()
             print cl.get_fcp_str()
-            cl.greedy_place_prod_all_res()
+            cl.greedy_place_prod_all_res( placement_schedule=["W","S","I"])
             print cl.calc_res()
             print cl.get_str()
             
