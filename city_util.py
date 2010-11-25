@@ -168,9 +168,9 @@ class ResInfo( object ):
         self.lake_name = lake_name # 'lake' type booster res name (if applicable)
 
         
-all_res = [ ResInfo( "wood",  0, "woodcutter", 250, "wood", "sawmill", None ),
-            ResInfo( "stone", 1, "quarry", 250, "stone", "stonemason", None ),
-            ResInfo( "iron",  2, "iron_mine", 250, "iron", "foundry", None ),
+all_res = [ ResInfo( "wood",  0, "woodcutter", 300, "wood", "sawmill", None ),
+            ResInfo( "stone", 1, "quarry", 300, "stone", "stonemason", None ),
+            ResInfo( "iron",  2, "iron_mine", 300, "iron", "foundry", None ),
             ResInfo( "food",  3, "farm", 300, "building_place_on_ground", "mill", "lake" ),
             ]
 
