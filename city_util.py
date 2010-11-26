@@ -103,7 +103,7 @@ fcp_url_prefix = "http://www.lou-fcp.co.uk/map.php?map="
 # internal templates, we only need this limited mapping
 ncp_ex_char_cobj_map = {
     "-":"building_place_on_ground",
-    "_":"building_place_on_ground",
+    "_":"building_place_on_water",
     "T":"town_hall","9":"water_tile_in_water_city","#":"wall"}
 
 ncp_ex_water_template = """;
