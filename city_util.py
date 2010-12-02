@@ -336,7 +336,7 @@ class CityLayout( object ):
 
     def remove_unlocked_nrs( self, locked ):
         for i,j,cobj in self.iter_mat():
-            if (not (i,j) in locked) and (cobj in nr_names) and (cobj != "lake"):
+            if (not (i,j) in locked) and (cobj in nr_names):
                 self.mat_set(i,j,self.template.mat_get(i,j))
                 
     def calc_res( self ):
@@ -367,9 +367,27 @@ class CityLayout( object ):
                 (tot_cottages,tot_buildings-tot_cottages,tot_buildings, all_tot, prod_per_b ) )
         return ret
 
-    def calc_res_at( self, res, i, j ):
+    def calc_res_area( self, s_i, s_j ):
+        tot_res = 0
+        for res in all_res:
+            for i,j,cobj in self.iter_adj(s_i,s_j):
+                tot_res += self.calc_res_at( res, i, j )
+        return tot_res
+
+    def calc_res_at( self, res, i, j, locked=None ):
+        # if we can create NRs by clearing an unlocked buildable
+        # spot, we calculate as if we have done so.
+        if res.nr_name != "building_place_on_ground":
+            locked=None
         if self.mat_get(i,j) == res.pb_name:
-            adj = [ cobj for i,j,cobj in self.iter_adj(i,j) ]
+            adj = []
+            for ii,jj,cobj in self.iter_adj(i,j):
+                if ( (not locked is None) and 
+                     (self.template.mat_get(ii,jj) == res.nr_name) and
+                     (cobj != res.lake_name) and
+                     (not (ii,jj) in locked) ):
+                    cobj = res.nr_name # note: may already be ==
+                adj.append( cobj )
             prod = res.base_prod
             num_nr = adj.count( res.nr_name )
             prod = int( prod * ( 1 + (num_nr*.4) + int(num_nr>0)*.1 ) ) # nat res
@@ -402,7 +420,7 @@ class CityLayout( object ):
             res_bb_cands = []
             self.res_bb_cands[res.name] = res_bb_cands
             for i,j,cobj in self.iter_mat():
-                if sum( int(cobj==res.nr_name) for i,j,cobj in self.iter_adj(i,j,2) ) >= 3:
+                if sum( int(cobj==res.nr_name) for i,j,cobj in self.iter_adj(i,j,2) ) >= 2:
                     res_bb_cands.append( (i,j,cobj) )
 
         assert use_slots > num_cottages
@@ -412,32 +430,27 @@ class CityLayout( object ):
         while slots_left > 0:
             wave_res_set = placement_schedule[ place_wave % len(placement_schedule) ]
             orig_slots_left = slots_left
-            slots_left = self.greedy_place_prod_res( locked, slots_left, wave_res_set )
+            slots_left, res_placed = self.greedy_place( locked, slots_left, wave_res_set )
             if orig_slots_left == slots_left:
                 break # no progress exit
+            if res_placed is None: # cottage case
+                assert (orig_slots_left - slots_left) == 1
+                if num_cottages > 0:
+                    num_cottages -= 1
+                    slots_left += 1
             place_wave += 1
 
-        slots_left += num_cottages
-        for min_cot_adj in xrange(3,-1,-1):
-            slots_left = self.greedy_place_cottages( locked, min_cot_adj, slots_left )
-
+        if num_cottages > 0: # if we have reserved cottage slots left
+            slots_left += num_cottages
+        while slots_left > 0:
+            orig_slots_left = slots_left
+            slots_left, res_places = self.greedy_place( locked, slots_left, [] )
+            if orig_slots_left == slots_left:
+                break # no progress exit
         if not keep_extra_res_nodes:
             self.remove_unlocked_nrs( locked )
-        #for res in all_res:
-        #    if 0 and res.nr_name == "building_place_on_ground":
-        #        self.greedy_place_prod_res( res, locked )
 
-    def greedy_place_cottages( self, locked, score_thresh, slots_left ):
-        for i,j,cobj in self.iter_mat():
-            if self.can_build_land(i,j,locked):
-                score = sum( int(cobj in pb_names) for ii,jj,cobj in self.iter_adj(i,j) )
-                if score >= score_thresh and slots_left:
-                    locked.add( (i,j) )
-                    self.mat_set(i,j,"cottage")
-                    slots_left -= 1
-        return slots_left
-                    
-    def greedy_place_prod_res( self, locked, slots_left, res_set ):
+    def greedy_place( self, locked, slots_left, res_set ):
         all_best = [0,[],None]
         wave_res = [ res for res in all_res if res.name[0].upper() in res_set ]
         for res in wave_res:
@@ -464,31 +477,57 @@ class CityLayout( object ):
                     if (best is not None) and best[0] > all_best[0]:
                         all_best[0:2] = best
                         all_best[2] = res
+        # find the best cottage we could add
+        for i,j,cobj in self.iter_mat():
+            # note: we consider 
+            if ( (self.template.mat_get(i,j) == "building_place_on_ground" ) and
+                 (cobj != "cottage") and (slots_left > 0) ):
+                pre_res = self.calc_res_area( i, j )
+                self.mat_set(i,j,"cottage")
+                delta_res = self.calc_res_area( i, j ) - pre_res
+                self.mat_set(i,j,cobj)
+                if delta_res >= all_best[0]: # allow zero score cottages
+                    all_best[0] = delta_res
+                    all_best[1] = [(i,j,"cottage")]
+                    all_best[2] = None
+
         #print "slots_left", slots_left, all_best[0:2]
         
         assert len(all_best[1]) <= slots_left
         slots_left -= len(all_best[1])
         #print "slots_left", slots_left, "placed", best
+        res = all_best[2]
         for i,j,cobj in all_best[1]:
-            assert self.can_build_land( i, j, locked )
+            if res is not None: # we relax the locked req for placing new cottages
+                assert self.can_build_land( i, j, locked )
             locked.add( (i,j) )
             self.mat_set(i,j,cobj)
             self.res_mat_invalidate(i,j)
-        res = all_best[2]
-        for i,j,cobj in all_best[1]:
-            if cobj == res.pb_name:
-                for ii,jj,cobj in self.iter_adj(i,j):
-                    if cobj == res.nr_name:
-                        locked.add( (ii,jj) )
-        return slots_left
+        if res is not None: # None is the cottage case
+            for i,j,cobj in all_best[1]:
+                if cobj == res.pb_name:
+                    for ii,jj,cobj in self.iter_adj(i,j):
+                        # special case to create NRs that we pretended existed in calc_res()
+                        if ( (res.nr_name == "building_place_on_ground") and 
+                             (self.template.mat_get(ii,jj) == "building_place_on_ground") and
+                             (cobj != res.lake_name) and
+                             (not (ii,jj) in locked) ):
+                            cobj = "building_place_on_ground"
+                            self.mat_set(ii,jj,cobj)
+                            self.res_mat_invalidate(ii,jj)
+                        if cobj == res.nr_name or cobj == res.lake_name:
+                            locked.add( (ii,jj) )
+
+        return slots_left, res
 
     def try_prod( self, res, s_i, s_j, adj, locked, placed, best, slots_left ):
         if len(adj): # recursive case
             i,j = adj[0]
             assert self.can_build_land(i,j,locked) 
             locked.add( (i,j) )
-            self.try_prod( res, s_i, s_j, adj[1:], locked, placed, best, slots_left ) # 'don't place' case
             orig_cobj = self.mat_get(i,j)
+            # 'don't place' case. note the special case for 'placing' grass here
+            self.try_prod( res, s_i, s_j, adj[1:], locked, placed, best, slots_left ) 
 
             if len(placed) < slots_left:
                 self.mat_set(i,j,res.pb_name)
@@ -501,7 +540,7 @@ class CityLayout( object ):
         elif placed: # leaf case
             tot_res = 0
             for i,j,cobj in placed:
-                tot_res += self.calc_res_at( res, i, j )
+                tot_res += self.calc_res_at( res, i, j, locked )
             score = float(tot_res) / len(placed)
             if score > best[0]:
                 best[0] = score
@@ -569,6 +608,8 @@ fcp_res_ex = "http://www.lou-fcp.co.uk/map.php?map=L0000C000000CC00AA0000A00000C
 
 fcp_res_ex_placed = "http://www.lou-fcp.co.uk/map.php?map=L0000C000000CC00AA0000A00044C0BAAAO3BB00000CM0000222L3B00C0D0000000CKOO3B0D00D04O4C00BOBB000004M4C00333BB0KA0C44CAAA0LB3302220CC0C222033L0DAAA0CKO00OMO0OKO0C00044440A000222000A0CCCC0A000AAA00A0444C0000222A0000MO00000OKOO2A000D00C02K2AA0B000BB0000002O2A2K0000000000B0A0O2000000000C0000CC000000CC"
 
+fcp_lake = "http://www.lou-fcp.co.uk/map.php?map=L000D000000B00000D0000AC0000A0B0C0000000C000A000B000BB0D00CC00000BB0B00B0000000BB0B0B00A00A0000000000A000A0BBAA000000AAA0D000B00000B000000000BBBBB0000C0AA000000000C00A0A00000000000C0AAAA00B00000C000000C0B0A0CCC0A0A00C0B0A00A000C000000C00B000A000000AAA0000B0C000C00000A0000000000CC0000A000CCC000"
+
 # these tests are pretty limited due to lack of good input examples
 # that exercise all the differs cobjs and such. however, they're a
 # start. 
@@ -600,16 +641,26 @@ class TestCityLayout(unittest.TestCase):
             self.assertEqual( ncp_str, cl.get_ncp_str( readable ) )
 
     def test_calc_res(self):
+        print "test_calc_res"
         for s,readable in [(fcp_res_ex,False)]:#self.all_strs:
             cl = CityLayout().parse_str( s )
-            print cl.calc_res()
+            #print cl.calc_res()
             cl.remove_non_nr()
-            print cl.calc_res()
-            print cl.get_fcp_str()
+            #print cl.calc_res()
+            #print cl.get_fcp_str()
             cl.greedy_place_prod_all_res( placement_schedule=["W","S","I"])
             print cl.calc_res()
-            print cl.get_str()
+            #print cl.get_str()
             
+    def test_lake(self):
+        print "test_lake"
+        cl = CityLayout().parse_str( fcp_lake )
+        cl.greedy_place_prod_all_res( placement_schedule=["F","F"]+["WSI"]*100,
+                                      use_slots=100,num_cottages=0,keep_extra_res_nodes=1)
+        print cl.calc_res()
+        #print cl.get_str( readable=True )
+        print cl.get_str()
+
     def test_bad_parse(self):
         self.assertRaises( ParseError, CityLayout().parse_str, "foo" )
 
