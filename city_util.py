@@ -154,7 +154,7 @@ ncp_ex_land_template = """:
 #####################
 """
 
-import re, unittest
+import re, unittest, copy
 
 
 class ResInfo( object ):
@@ -178,6 +178,9 @@ nr_names = set( [res.nr_name for res in all_res]
                 + [res.lake_name for res in all_res if res.lake_name] )
 pb_names = set( res.pb_name for res in all_res )
 
+bbs_nrs_cot_names = set( list(nr_names) + [res.bb_name for res in all_res] + ["cottage"] )
+
+pb_name_res_map = dict( (res.pb_name,res) for res in all_res )
 
 class ParseError( ValueError ):
     pass
@@ -194,12 +197,15 @@ class CityLayout( object ):
         self.kind = None
         self.template = None
         self.output_str_func = self.get_fcp_str
-        self._mat = [None]*self.city_elems
-        self._res_mat = [None]*self.city_elems*len(all_res) # for res placment scores
+        self._mat = [ [None]*self.city_cols for i in xrange(self.city_rows) ]
+        self._res_mat = [ copy.deepcopy(self._mat) for i in xrange(len(all_res))]  # for res placment scores
+        self._mat_adj_1 = [ [ [ (ii,jj) for (ii,jj,v) in self.iter_adj( i, j ) ] for i in xrange(self.city_cols) ]
+                            for j in xrange(self.city_rows) ]
     def res_mat_get( self, i, j, rix ):
-        return self._res_mat[ i + j*self.city_cols + rix*self.city_elems ]
+        return self._res_mat[rix][j][i]
     def res_mat_set( self, i, j, rix, v ):
-        self._res_mat[ i + j*self.city_cols + rix*self.city_elems ] = v
+        self._res_mat[rix][j][i] = v
+            
     def res_mat_invalidate( self, s_i, s_j ):
         dist = 2
         for j in xrange(s_j-dist,s_j+dist+1):
@@ -210,24 +216,25 @@ class CityLayout( object ):
                             self.res_mat_set(i,j,rix,None)
         
     def mat_get( self, i, j ):
-        return self._mat[ i + j*self.city_cols ]
+        return self._mat[j][i]
     def mat_set( self, i, j, v ):
-        self._mat[ i + j*self.city_cols ] = v
-    def iter_mat( self ):
-        ix = 0
-        for j in xrange( self.city_rows ):
-            for i in xrange( self.city_cols ):
-                yield i,j,self._mat[ix]
-                ix += 1
+        orig_v = self._mat[j][i]
+        self._mat[j][i] = v
 
+    def iter_mat( self ):
+        for j in xrange( self.city_rows ):
+            row = self._mat[j]
+            for i in xrange( self.city_cols ):
+                yield i,j,row[i]
 
     # note: the results includes s_i,s_j itself
     def iter_adj( self, s_i, s_j, dist = 1 ):
         for j in xrange(s_j-dist,s_j+dist+1):
             if j>0 and j<self.city_rows:
+                row = self._mat[j]
                 for i in xrange(s_i-dist,s_i+dist+1):
                     if i>0 and i<self.city_cols:
-                        yield i,j,self._mat[ i + j*self.city_cols ]#mat_get(i,j)
+                        yield i,j,row[i]
 
     def check_len_and_parse_kind( self, err_str, s, expected_len, char_kind_map ):
         if len(s) != expected_len:
@@ -329,11 +336,11 @@ class CityLayout( object ):
     def get_str( self, readable = False ):
         return self.output_str_func( readable )
 
-    def remove_non_nr( self ):
+    def remove_non_nr( self, also_clear_castle = False ):
         for i,j,cobj in self.iter_mat():
-            if not cobj in nr_names:
+            if (not cobj in nr_names) and ( also_clear_castle or (not cobj == "castle") ):
                 self.mat_set(i,j,self.template.mat_get(i,j))
-
+                
     def remove_unlocked_nrs( self, locked ):
         for i,j,cobj in self.iter_mat():
             if (not (i,j) in locked) and (cobj in nr_names):
@@ -370,7 +377,7 @@ class CityLayout( object ):
     def calc_res_area( self, s_i, s_j ):
         tot_res = 0
         for res in all_res:
-            for i,j,cobj in self.iter_adj(s_i,s_j):
+            for i,j in self._mat_adj_1[s_j][s_i]:
                 tot_res += self.calc_res_at( res, i, j )
         return tot_res
 
@@ -381,7 +388,8 @@ class CityLayout( object ):
             locked=None
         if self.mat_get(i,j) == res.pb_name:
             adj = []
-            for ii,jj,cobj in self.iter_adj(i,j):
+            for ii,jj in self._mat_adj_1[j][i]:
+                cobj = self._mat[jj][ii]
                 if ( (not locked is None) and 
                      (self.template.mat_get(ii,jj) == res.nr_name) and
                      (cobj != res.lake_name) and
@@ -399,18 +407,19 @@ class CityLayout( object ):
             return 0
 
     def can_build_land( self, i, j, locked ):
-        if self.build_only_on_open:
-            return( (self.mat_get(i,j) == "building_place_on_ground") and
-                    not ( (i,j) in locked ) )
-        else:
-            return( (self.template.mat_get(i,j) == "building_place_on_ground") and
-                    not ( (i,j) in locked ) )
+        return(  ( (self.mat_get(i,j) == "building_place_on_ground") or
+                   ( self.build_on_nrs and (self.mat_get(i,j) in nr_names) ) )
+                 and (  not ( (i,j) in locked ) ) )
+        #else:
+        #    return( (self.template.mat_get(i,j) == "building_place_on_ground") and
+        #            not ( (i,j) in locked ) )
 
     def greedy_place_prod_all_res( self, use_slots = 72, num_cottages = 15, 
-                                   keep_extra_res_nodes = 0, build_only_on_open = 0,
+                                   keep_extra_res_nodes = 0, 
+                                   build_on_nrs = 1,
                                    placement_schedule = [ "WSI" ] ):
-        # sigh, i'm too lazy to pass this down:
-        self.build_only_on_open = build_only_on_open
+        # sigh, i'm too lazy to pass these down:
+        self.build_on_nrs = build_on_nrs
 
         # hacky optimization: if there are < 3 nat res (originally) in
         # range of a potential booster spot, don't bother. we don't
@@ -423,7 +432,7 @@ class CityLayout( object ):
                 if sum( int(cobj==res.nr_name) for i,j,cobj in self.iter_adj(i,j,2) ) >= 2:
                     res_bb_cands.append( (i,j,cobj) )
 
-        assert use_slots > num_cottages
+        assert use_slots >= num_cottages
         slots_left = use_slots - num_cottages
         locked = set()
         place_wave = 0
@@ -466,7 +475,7 @@ class CityLayout( object ):
                             orig_cobj = self.mat_get(i,j)
                             self.mat_set(i,j,res.bb_name)
                             placed = [(i,j,res.bb_name)]
-                        adj = [ (ii,jj) for ii,jj,cobj in self.iter_adj( i, j ) 
+                        adj = [ (ii,jj) for ii,jj in self._mat_adj_1[j][i]
                                 if self.can_build_land(ii,jj,locked) ]
                         self.try_prod( res, i, j, adj, locked, placed, best, slots_left )
                         if best[1] is None: best = None # couldn't place anything
@@ -506,16 +515,17 @@ class CityLayout( object ):
         if res is not None: # None is the cottage case
             for i,j,cobj in all_best[1]:
                 if cobj == res.pb_name:
-                    for ii,jj,cobj in self.iter_adj(i,j):
+                    for ii,jj in self._mat_adj_1[j][i]:
+                        cobj2 = self._mat[jj][ii]
                         # special case to create NRs that we pretended existed in calc_res()
                         if ( (res.nr_name == "building_place_on_ground") and 
                              (self.template.mat_get(ii,jj) == "building_place_on_ground") and
-                             (cobj != res.lake_name) and
+                             (cobj2 != res.lake_name) and
                              (not (ii,jj) in locked) ):
-                            cobj = "building_place_on_ground"
-                            self.mat_set(ii,jj,cobj)
+                            cobj2 = "building_place_on_ground"
+                            self.mat_set(ii,jj,cobj2)
                             self.res_mat_invalidate(ii,jj)
-                        if cobj == res.nr_name or cobj == res.lake_name:
+                        if cobj2 == res.nr_name or cobj2 == res.lake_name:
                             locked.add( (ii,jj) )
 
         return slots_left, res
@@ -606,9 +616,14 @@ ncp_ex_1 = "[ShareString.1.3];########################----SS-#---..-:#####------
 
 fcp_res_ex = "http://www.lou-fcp.co.uk/map.php?map=L0000C000000CC00AA0000A00000C0BAAA00BB00000C0000000000B00C0D0000000C0000B0D00D0000C00B0BB00000000C00000BB00A0C00CAAA00B0000A00CC0C00000000DAAA0C000000000D00C00000000A000000000A0CCCC0A000AAA00A0000C000000AA0000000000000000A000D00C0000AA0B000BB000000000A000000000000B0A000000000000C0000CC000000CC"
 
+fcp_res_ex_out = "http://www.lou-fcp.co.uk/map.php?map=L00000000000CC00AA00330000O4C40A2A23BBL0000C4M40002KL3B33000004O000000O3B0000000O4C00B3BB002200M4C0003L3BOKA0C44CAAA00B3O02220CCOC222000000AAA00KO00MO0000000000444000000O2K00000CCCC00000A2A2000444C00000OAAO00OMO0000000222A000000000K2A000000000000000O2A00000000000000A000000000000000000000000000"
+
 fcp_res_ex_placed = "http://www.lou-fcp.co.uk/map.php?map=L0000C000000CC00AA0000A00044C0BAAAO3BB00000CM0000222L3B00C0D0000000CKOO3B0D00D04O4C00BOBB000004M4C00333BB0KA0C44CAAA0LB3302220CC0C222033L0DAAA0CKO00OMO0OKO0C00044440A000222000A0CCCC0A000AAA00A0444C0000222A0000MO00000OKOO2A000D00C02K2AA0B000BB0000002O2A2K0000000000B0A0O2000000000C0000CC000000CC"
 
 fcp_lake = "http://www.lou-fcp.co.uk/map.php?map=L000D000000B00000D0000AC0000A0B0C0000000C000A000B000BB0D00CC00000BB0B00B0000000BB0B0B00A00A0000000000A000A0BBAA000000AAA0D000B00000B000000000BBBBB0000C0AA000000000C00A0A00000000000C0AAAA00B00000C000000C0B0A0CCC0A0A00C0B0A00A000C000000C00B000A000000AAA0000B0C000C00000A0000000000CC0000A000CCC000"
+
+fcp_lake_out = "http://www.lou-fcp.co.uk/map.php?map=L000D000440B00000D5O50ACMO00A0B0C000N5004440A033B3L3O50D00CC0000LBB3B3O00000330BB3B0B00A00AO303L303300000ALBBAA003L3O05N5D033B00003B3000O500OBBBBBO00000AA0033304O4C00A2A00000L0O4M4C0AAAK04O00004C402222C4M2A0CCC0AKAOOC4OKA00A224C002220C00B000AOM4O00AAA0000BMC004C40002A2000444000CC02K2A000CCC000"
+
 
 # these tests are pretty limited due to lack of good input examples
 # that exercise all the differs cobjs and such. however, they're a
@@ -642,7 +657,7 @@ class TestCityLayout(unittest.TestCase):
 
     def test_calc_res(self):
         print "test_calc_res"
-        for s,readable in [(fcp_res_ex,False)]:#self.all_strs:
+        for s,readable,out in [(fcp_res_ex,False,fcp_res_ex_out)]:#self.all_strs:
             cl = CityLayout().parse_str( s )
             #print cl.calc_res()
             cl.remove_non_nr()
@@ -650,6 +665,7 @@ class TestCityLayout(unittest.TestCase):
             #print cl.get_fcp_str()
             cl.greedy_place_prod_all_res( placement_schedule=["W","S","I"])
             print cl.calc_res()
+            self.assertEqual( out, cl.get_str() )
             #print cl.get_str()
             
     def test_lake(self):
@@ -661,10 +677,35 @@ class TestCityLayout(unittest.TestCase):
         #print cl.get_str( readable=True )
         print cl.get_str()
 
+        self.assertEqual( fcp_lake_out, cl.get_str() )
+        
+
+
     def test_bad_parse(self):
         self.assertRaises( ParseError, CityLayout().parse_str, "foo" )
 
+#import cProfile
+
 if __name__ == '__main__':
-    pass
+    #cProfile.run('unittest.main()')
     unittest.main()
 
+cur_test_res = """.test_calc_res
+--- res totals ---
+wood 25824
+stone 13192
+iron 22262
+food 0
+--- end res --- cottages 15 other_buildings 57 total_buildings 72 all_tot 61278 prod/building 851.083333333 ---
+..test_lake
+--- res totals ---
+wood 21619
+stone 28748
+iron 26763
+food 19319
+--- end res --- cottages 17 other_buildings 83 total_buildings 100 all_tot 96449 prod/building 964.49 ---
+http://www.lou-fcp.co.uk/map.php?map=L000D000440B00000D5O50ACMO00A0B0C000N5004440A033B3L3O50D00CC0000LBB3B3O00000330BB3B0B00A00AO303L303300000ALBBAA003L3O05N5D033B00003B3000O500OBBBBBO00000AA0033304O4C00A2A00000L0O4M4C0AAAK04O00004C402222C4M2A0CCC0AKAOOC4OKA00A224C002220C00B000AOM4O00AAA0000BMC004C40002A2000444000CC02K2A000CCC000
+....
+----------------------------------------------------------------------
+Ran 7 tests in 15.799s
+"""
