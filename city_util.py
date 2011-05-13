@@ -489,8 +489,7 @@ class CityLayout( object ):
         # find the best cottage we could add
         for i,j,cobj in self.iter_mat():
             # note: we consider 
-            if ( (self.template.mat_get(i,j) == "building_place_on_ground" ) and
-                 (cobj != "cottage") and (slots_left > 0) ):
+            if self.can_build_land(i,j,locked) and (slots_left > 0):
                 pre_res = self.calc_res_area( i, j )
                 self.mat_set(i,j,"cottage")
                 delta_res = self.calc_res_area( i, j ) - pre_res
